@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         PJe - Minuta em modo leitura (overlay tela cheia)
 // @namespace    pje.minuta.modo-leitura
-// @version      0.4.4
+// @version      0.4.5
 // @description  Detecta o texto da minuta (despacho/decisão/sentença) na tela de elaboração do PJe — editor Bernoulli Documentos (bd-*/ProseMirror, inclusive dentro de ShadowRoot fechado), CKEditor ou modo visualização — e exibe em um overlay de leitura em tela cheia: coluna estreita, fonte grande, temas claro/sépia/escuro, ajuste de fonte e largura, copiar e imprimir.
 // @author       Ricardo
 // @match        https://pje1g.trf5.jus.br/pje/*
 // @match        https://pje2g.trf5.jus.br/pje/*
 // @run-at       document-start
+// @updateURL    https://raw.githubusercontent.com/jusgador/PJE-ModoLeitura/main/pje-minuta-modo-leitura.user.js
+// @downloadURL  https://raw.githubusercontent.com/jusgador/PJE-ModoLeitura/main/pje-minuta-modo-leitura.user.js
 // @grant        none
 // ==/UserScript==
 
