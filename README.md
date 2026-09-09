@@ -5,7 +5,7 @@ Userscript (Tampermonkey) que lê a **minuta do PJe** (despacho, decisão, sente
 ler o texto apertado dentro do editor do sistema.
 
 - Alvo: `pje1g.trf5.jus.br` e `pje2g.trf5.jus.br` (TRF5, 1º e 2º graus)
-- Versão atual: **0.4.2**
+- Versão atual: **0.4.4**
 - Arquivo: [`pje-minuta-modo-leitura.user.js`](pje-minuta-modo-leitura.user.js)
 
 ## Instalação
