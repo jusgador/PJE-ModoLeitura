@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PJe - Minuta em modo leitura (overlay tela cheia)
 // @namespace    pje.minuta.modo-leitura
-// @version      0.4.2
+// @version      0.4.4
 // @description  Detecta o texto da minuta (despacho/decisão/sentença) na tela de elaboração do PJe — editor Bernoulli Documentos (bd-*/ProseMirror, inclusive dentro de ShadowRoot fechado), CKEditor ou modo visualização — e exibe em um overlay de leitura em tela cheia: coluna estreita, fonte grande, temas claro/sépia/escuro, ajuste de fonte e largura, copiar e imprimir.
 // @author       Ricardo
 // @match        https://pje1g.trf5.jus.br/pje/*
@@ -186,16 +186,37 @@
 
     function medir(html) { return textoDe(html).replace(/\s+/g, '').length; }
 
+    // Elementos cujo textContent é CSS/JS, não conteúdo do documento. Sem isso
+    // um <style> de 20 mil caracteres dentro de um shadow root vira "candidato
+    // a minuta" e engana a descida até o miolo (ver candidatosDoShadow).
+    const TAGS_NAO_TEXTO = new Set(['STYLE', 'SCRIPT', 'TEMPLATE', 'NOSCRIPT', 'LINK', 'META', 'TITLE']);
+    function temTextoUtil(el) { return !!el && !TAGS_NAO_TEXTO.has(el.tagName); }
+
     // Medida BARATA para elementos do DOM (sem DOMParser). Usada para ordenar
     // candidatos; a medida exata (medir/textoDe) só roda no escolhido.
-    function medirEl(el) { return ((el && el.textContent) || '').replace(/\s+/g, '').length; }
+    function medirEl(el) {
+        if (!temTextoUtil(el)) return 0;
+        return (el.textContent || '').replace(/\s+/g, '').length;
+    }
 
     // Indício de que ESTA página tem minuta/editor. Enquanto for false, o
     // script fica inerte (nenhuma varredura): importante para não pesar em
     // páginas como o Painel, que não têm minuta.
+    // Também conta como pista: ShadowRoot capturado (o editor do PJe 2.x mora
+    // dentro de um shadow fechado) e o documento de iframes alcançáveis
+    // (o documento editado fica num iframe about:blank dentro desse shadow).
     const SELETOR_PISTA = '#appEditorAreaConteudoInner, .ProseMirror, .cke_editable, [contenteditable="true"], iframe#editorEstruturadoFrame, [id*=":minuta-"]';
     function temPistaDeEditor() {
-        try { return !!document.querySelector(SELETOR_PISTA); } catch (e) { return false; }
+        try {
+            if (sombrasCapturadas.length > 0) return true;
+            if (document.querySelector(SELETOR_PISTA)) return true;
+            for (const f of todosOsIframes()) {
+                let d = null;
+                try { d = f.contentDocument; } catch (e) { continue; }
+                if (d && d.querySelector(SELETOR_PISTA)) return true;
+            }
+            return false;
+        } catch (e) { return false; }
     }
 
     // Nunca considerar o PRÓPRIO overlay (nem seus ancestrais) como candidato a
@@ -234,6 +255,26 @@
         'iframe[src*="estruturado" i]',
     ];
 
+    // Todos os iframes alcançáveis, inclusive os que vivem DENTRO de ShadowRoots
+    // (fechados inclusive: as referências capturadas no document-start estão em
+    // raizesDeShadow()). Verificado ao vivo no PJe 2.x: o editor (badon-writer)
+    // monta o documento num iframe about:blank colocado dentro de um ShadowRoot
+    // FECHADO (div#badon-writer-app-container) — invisível para o
+    // document.querySelectorAll do frame que hospeda a tarefa. Como about:blank
+    // herda a origem do pai, contentDocument é acessível; o userscript não roda
+    // nesse iframe porque o @match não cobre about:blank.
+    function iframesDe(raiz) {
+        let achados = [];
+        try { achados = [...raiz.querySelectorAll('iframe')]; } catch (e) { }
+        return achados;
+    }
+
+    function todosOsIframes() {
+        const conjunto = new Set(iframesDe(document));
+        for (const raiz of raizesDeShadow()) iframesDe(raiz).forEach((f) => conjunto.add(f));
+        return [...conjunto];
+    }
+
     // Coleta TODOS os candidatos de um conjunto de seletores (ordenados do
     // maior para o menor). Devolver a lista — em vez do primeiro — é o que
     // permite descartar candidato que "não parece peça processual" e seguir
@@ -244,7 +285,7 @@
             let nos = [];
             try { nos = [...raiz.querySelectorAll(sel)]; } catch (e) { continue; }
             for (const el of nos) {
-                if (!foraDoOverlay(el)) continue;
+                if (!temTextoUtil(el) || !foraDoOverlay(el)) continue;
                 const tamanho = medirEl(el);
                 if (tamanho >= 200) achados.push({ html: el.innerHTML, origem: rotulo + ':' + sel, tamanho });
             }
@@ -258,21 +299,19 @@
         // (a) Bernoulli Documentos / ProseMirror neste documento
         achados.push(...candidatosDe(SELETORES_EDITOR_BD, document, 'editor'));
 
-        // (a2) idem, dentro do iframe do editor estruturado (se for mesma origem)
-        for (const sel of SELETORES_IFRAME_EDITOR) {
-            let frames = [];
-            try { frames = [...document.querySelectorAll(sel)]; } catch (e) { continue; }
-            for (const f of frames) {
-                let doc = null;
-                try { doc = f.contentDocument; } catch (e) { continue; }
-                if (!doc) continue;
-                const dentro = candidatosDe(SELETORES_EDITOR_BD, doc, 'iframe-editor:' + sel);
-                if (dentro.length) { achados.push(...dentro); continue; }
-                const corpo = doc.body && doc.body.isContentEditable ? doc.body : null;
-                if (corpo) {
-                    const tamanho = medirEl(corpo);
-                    if (tamanho >= 200) achados.push({ html: corpo.innerHTML, origem: 'iframe-editor:body', tamanho });
-                }
+        // (a2) idem, dentro dos iframes alcançáveis — mesma origem, inclusive
+        //      about:blank e inclusive iframes que vivem dentro de ShadowRoots
+        //      fechados (é aí que o editor do PJe 2.x monta o documento).
+        for (const f of todosOsIframes()) {
+            let doc = null;
+            try { doc = f.contentDocument; } catch (e) { continue; }
+            if (!doc || !doc.body) continue;
+            const dentro = candidatosDe(SELETORES_EDITOR_BD, doc, 'iframe-editor:' + descrever(f));
+            if (dentro.length) { achados.push(...dentro); continue; }
+            const corpo = doc.body.isContentEditable ? doc.body : null;
+            if (corpo) {
+                const tamanho = medirEl(corpo);
+                if (tamanho >= 200) achados.push({ html: corpo.innerHTML, origem: 'iframe-editor:body:' + descrever(f), tamanho });
             }
         }
 
@@ -345,12 +384,13 @@
                 let alvo = raiz;
                 for (let i = 0; i < 20; i++) {
                     const n = medirEl(alvo);
-                    const filho = [...alvo.children].find((c) => medirEl(c) >= n * 0.95 && foraDoOverlay(c));
+                    if (n <= 0) break;
+                    const filho = [...alvo.children].find((c) => temTextoUtil(c) && medirEl(c) >= n * 0.95 && foraDoOverlay(c));
                     if (!filho) break;
                     alvo = filho;
                 }
                 const tamanho = medirEl(alvo);
-                if (tamanho >= 200) achados.push({ html: alvo.innerHTML, origem: 'shadow', tamanho });
+                if (tamanho >= 200 && temTextoUtil(alvo)) achados.push({ html: alvo.innerHTML, origem: 'shadow', tamanho });
             } catch (e) { }
         }
         return achados.sort((a, b) => b.tamanho - a.tamanho);
@@ -370,12 +410,13 @@
             let alvo = c.el;
             for (let i = 0; i < 20; i++) {
                 const n = medirEl(alvo);
-                const filho = [...alvo.children].find((x) => medirEl(x) >= n * 0.95 && foraDoOverlay(x));
+                if (n <= 0) break;
+                const filho = [...alvo.children].find((x) => temTextoUtil(x) && medirEl(x) >= n * 0.95 && foraDoOverlay(x));
                 if (!filho) break;
                 alvo = filho;
             }
             const tamanho = medirEl(alvo);
-            if (tamanho >= 200 && foraDoOverlay(alvo)) achados.push({ html: alvo.innerHTML, origem: 'heurística:' + descrever(alvo), tamanho });
+            if (tamanho >= 200 && temTextoUtil(alvo) && foraDoOverlay(alvo)) achados.push({ html: alvo.innerHTML, origem: 'heurística:' + descrever(alvo), tamanho });
         }
         return achados;
     }
@@ -501,6 +542,8 @@
     let overlay = null;
     let doc = null;          // { html, texto, origem, titulo }
     let usuarioFechou = false; // respeita o Esc: não reabre sozinho depois disso
+    let pedidoManual = false;  // um Alt+L/botão está aguardando resposta dos frames
+    let timerPedidoManual = null;
 
     const CSS = `
 #pml-overlay {
@@ -710,6 +753,22 @@
         setTimeout(() => { if (overlay) aplicarPreferencias(); else info.textContent = anterior; }, 1500);
     }
 
+    // Desenha o `doc` atual no overlay. Separado de abrir() porque também é
+    // chamado quando chega texto NOVO dos frames (ver listener de message) —
+    // é isso que faz o modo leitura mostrar a minuta EDITADA, e não a que
+    // estava na tela quando ele abriu pela primeira vez.
+    // Se o overlay já estava visível, preserva a posição de rolagem; se estava
+    // fechado, começa do topo.
+    function renderizar() {
+        if (!overlay || !doc) return;
+        const rolagem = overlay.querySelector('#pml-rolagem');
+        const estavaVisivel = overlay.style.display !== 'none';
+        const topo = estavaVisivel && rolagem ? rolagem.scrollTop : 0;
+        overlay.querySelector('.pml-titulo').textContent = doc.titulo || 'Modo leitura';
+        overlay.querySelector('#pml-conteudo').innerHTML = doc.html;
+        if (rolagem) rolagem.scrollTop = topo;
+    }
+
     function abrir(novoDoc, manual) {
         if (manual) usuarioFechou = false;
         else if (usuarioFechou) return false; // o usuário fechou: não insistir
@@ -717,8 +776,7 @@
         if (!doc) return false;
 
         montarOverlay();
-        overlay.querySelector('.pml-titulo').textContent = doc.titulo || 'Modo leitura';
-        overlay.querySelector('#pml-conteudo').innerHTML = doc.html;
+        renderizar();
         overlay.style.display = 'flex';
         aplicarPreferencias();
         overlay.querySelector('#pml-conteudo').focus();
@@ -729,6 +787,7 @@
     function fechar() {
         if (!overlay) return;
         usuarioFechou = true;
+        pedidoManual = false; // se um pedido estava em curso, não reabra depois
         overlay.style.display = 'none';
         document.documentElement.style.overflow = '';
     }
@@ -761,30 +820,72 @@
         try { window.top.postMessage({ pml: MSG, tipo: 'documento', doc: minuta }, '*'); } catch (e) { }
     }
 
+    // Qualidade da ORIGEM do texto: quanto menor, melhor. Serve para o topo não
+    // trocar a minuta editada (editor/ProseMirror/shadow) pelo "backup" que o
+    // PJe guarda em [id*=":minuta-"] (container), que fica com o texto de quando
+    // a tarefa abriu.
+    function pesoOrigem(origem) {
+        const o = String(origem || '');
+        if (o.indexOf('editor') === 0 || o.indexOf('iframe-editor') === 0 ||
+            o.indexOf('CKEditor') === 0 || o.indexOf('editável') === 0) return 0;
+        if (o.indexOf('shadow') === 0) return 1;
+        if (o.indexOf('container') === 0) return 2;
+        return 3;
+    }
+
+    // Pede a extração a TODOS os frames descendentes — não só aos filhos
+    // diretos. Na cadeia do PJe 2.x a minuta vive num neto:
+    //   top (dev.seam) -> iframe #ngFrame (frontend-prd, SEM o script)
+    //                  -> iframe movimentar.seam (é aqui que está a minuta)
+    // e o frame intermediário é de outra origem, então não repassa o pedido.
+    // As propriedades `frames`/`length` de um WindowProxy são acessíveis mesmo
+    // entre origens diferentes, o que permite descer a árvore daqui.
+    function pedirAosFrames() {
+        let enviados = 0;
+        const visitar = (win, nivel) => {
+            if (!win || nivel > 6) return;
+            let total = 0;
+            try { total = win.frames.length || 0; } catch (e) { return; }
+            for (let i = 0; i < total; i++) {
+                let f = null;
+                try { f = win.frames[i]; } catch (e) { continue; }
+                try { f.postMessage({ pml: MSG, tipo: 'pedir' }, '*'); enviados++; } catch (e) { }
+                visitar(f, nivel + 1);
+            }
+        };
+        visitar(window, 0);
+        return enviados;
+    }
+
     function pedirMinuta(manual) {
         if (ESTOU_NO_TOPO) {
+            if (manual) {
+                // Marca que ESTE pedido é do usuário (Alt+L/botão): quando a
+                // resposta chegar, o overlay abre/atualiza mesmo que a abertura
+                // automática já tenha sido gasta neste carregamento.
+                pedidoManual = true;
+                clearTimeout(timerPedidoManual);
+                timerPedidoManual = setTimeout(() => { pedidoManual = false; }, 5000);
+            }
             // 1) o editor pode estar neste próprio documento (ou dentro de um
             //    ShadowRoot capturado aqui) — tenta antes de perguntar aos filhos.
             //    A checagem de "pista" evita varrer o documento inteiro a cada
             //    ciclo quando a página não tem editor nenhum.
-            const temPista = sombrasCapturadas.length > 0 || !!document.querySelector(
-                '#appEditorAreaConteudoInner, .ProseMirror, .cke_editable, [contenteditable="true"], iframe#editorEstruturadoFrame'
-            );
-            const proprio = temPista ? extrairMinuta() : null;
+            const proprio = temPistaDeEditor() ? extrairMinuta() : null;
             if (proprio) {
                 const mudou = !doc || doc.texto !== proprio.texto;
                 doc = proprio;
+                pedidoManual = false; // resolvido aqui: nada a esperar dos frames
+                clearTimeout(timerPedidoManual);
                 if (mudou || (overlay && overlay.style.display === 'none')) abrir(null, manual);
                 return;
             }
-            // 2) pergunta aos frames filhos (a minuta costuma estar aninhada)
-            [...document.querySelectorAll('iframe')].forEach((f) => {
-                try { f.contentWindow.postMessage({ pml: MSG, tipo: 'pedir' }, '*'); } catch (e) { }
-            });
-            window.frames.length && [...Array(window.frames.length)].forEach((_, i) => {
-                try { window.frames[i].postMessage({ pml: MSG, tipo: 'pedir' }, '*'); } catch (e) { }
-            });
-            if (doc) abrir(null, manual); // já tem em cache
+            // 2) pergunta aos frames (inclusive netos — ver pedirAosFrames).
+            //    Mostra na hora o que já está em cache; se a resposta trouxer
+            //    texto diferente (a minuta foi editada), o overlay se atualiza
+            //    sozinho quando a mensagem chegar (ver listener de message).
+            pedirAosFrames();
+            if (doc && (manual || (overlay && overlay.style.display === 'none'))) abrir(null, manual);
         } else {
             const m = extrairMinuta();
             if (m) responderAoTopo(m);
@@ -798,10 +899,27 @@
 
         if (ESTOU_NO_TOPO) {
             if (d.tipo === 'documento' && d.doc && d.doc.texto) {
-                const jaTem = doc && doc.texto === d.doc.texto;
-                doc = d.doc;
-                if (!jaTem && cfg.autoAbrir && !jaAbriuNesteCarregamento()) { abrir(); marcarAbriu(); }
-                else if (!jaTem && !cfg.autoAbrir) { avisar('Minuta detectada — clique em "Modo leitura".'); }
+                const novo = d.doc;
+                const mudou = !doc || doc.texto !== novo.texto;
+                const aguardando = pedidoManual;
+                const pior = !!doc && pesoOrigem(novo.origem) > pesoOrigem(doc.origem);
+                pedidoManual = false;
+
+                if (!mudou) return;
+
+                // Texto de qualidade inferior (ex.: o "backup" antigo do PJe)
+                // não sobrescreve o que já está na tela.
+                if (pior && (aguardando || (overlay && overlay.style.display !== 'none'))) return;
+
+                doc = novo;
+
+                // Overlay aberto (ou pedido manual): REDESENHA com o texto novo.
+                // É isto que faz o modo leitura mostrar a minuta editada em vez
+                // da que estava na tela na primeira abertura.
+                if (aguardando || (overlay && overlay.style.display !== 'none')) { abrir(null, true); return; }
+
+                if (cfg.autoAbrir && !usuarioFechou && !jaAbriuNesteCarregamento()) { abrir(); marcarAbriu(); }
+                else if (!cfg.autoAbrir) { avisar('Minuta detectada — clique em "Modo leitura".'); }
             }
             return;
         }
@@ -830,8 +948,11 @@
     function atalhoGlobal(ev) {
         if (ev.altKey && !ev.ctrlKey && !ev.shiftKey && (ev.key === 'l' || ev.key === 'L')) {
             ev.preventDefault();
-            if (ESTOU_NO_TOPO) { if (doc) abrir(null, true); else pedirMinuta(true); }
-            else pedirMinuta(true);
+            // Sempre PEDE a minuta de novo (re-extrai neste documento e pergunta
+            // aos frames). Antes, com um `doc` em cache, o Alt+L só redesenhava
+            // o cache — e o modo leitura reaparecia com o texto de ANTES das
+            // edições feitas no editor.
+            pedirMinuta(true);
         }
     }
 
@@ -903,6 +1024,15 @@
         window.__pmlDiagnostico = () => ({
             url: location.href,
             sombrasCapturadas: sombrasCapturadas.length,
+            iframes: todosOsIframes().map((f) => {
+                let temDoc = false, temEditor = false;
+                try {
+                    const d = f.contentDocument;
+                    temDoc = !!d;
+                    temEditor = !!(d && d.querySelector(SELETOR_PISTA));
+                } catch (e) { }
+                return { desc: descrever(f), src: f.getAttribute('src'), temDoc, temEditor };
+            }),
             candidatos: [...candidatosDoEditor(), ...candidatosDoShadow(), ...candidatosDeContainer(), ...candidatosHeuristicos()]
                 .slice(0, 12)
                 .map((t) => ({
@@ -929,8 +1059,7 @@
         if (typeof GM_registerMenuCommand === 'function' && ESTOU_NO_TOPO) {
             GM_registerMenuCommand('Abrir/fechar modo leitura', () => {
                 if (overlay && overlay.style.display !== 'none') fechar();
-                else if (doc) abrir(null, true);
-                else pedirMinuta(true);
+                else pedirMinuta(true); // sempre re-extrai (o cache pode estar velho)
             });
             GM_registerMenuCommand('Ligar/desligar abertura automática', () => {
                 cfg.autoAbrir = !cfg.autoAbrir;
