@@ -596,12 +596,20 @@
 #pml-botao-flutuante {
     position: fixed; right: 18px; bottom: 18px; z-index: 2147483500;
     display: flex; align-items: center; gap: 6px;
-    padding: 9px 14px; border-radius: 999px; cursor: pointer;
-    border: 1px solid #1f6feb; background: #1f6feb; color: #fff;
-    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 600;
-    box-shadow: 0 4px 14px rgba(0,0,0,.25);
+    padding: 7px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid rgba(31,111,235,.45); background: #1f6feb; color: #fff;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 12px; font-weight: 500;
+    box-shadow: 0 2px 8px rgba(0,0,0,.14);
+    opacity: .62;
+    transition: opacity .18s ease, box-shadow .18s ease;
 }
-#pml-botao-flutuante:hover { filter: brightness(1.08); }
+#pml-botao-flutuante:hover {
+    opacity: 1; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+}
+#pml-botao-flutuante:focus-visible {
+    opacity: 1; box-shadow: 0 4px 14px rgba(0,0,0,.25);
+    outline: 2px solid rgba(31,111,235,.55); outline-offset: 2px;
+}
 `;
 
     function injetarCSS() {
